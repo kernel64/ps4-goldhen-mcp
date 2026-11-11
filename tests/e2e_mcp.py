@@ -26,7 +26,8 @@ def say_later(*lines, delay=1.5):
 async def main():
     env = dict(os.environ, PS4_HOST="127.0.0.1", PS4_FTP_PORT=str(m.ftp_port), PS4_KLOG_PORT=str(m.klog_port),
                PS4_DEBUG_PORT=str(m.dbg_port), PS4_CACHE_DIR=tempfile.mkdtemp(), PYTHONPATH="src",
-               PS4_AGENT_PORT=str(AGENT_PORT), PS4_BINLOADER_PORT=str(m.binloader_port), PS4_PS4DEBUG_BIN=PAYLOAD)
+               PS4_AGENT_PORT=str(AGENT_PORT), PS4_BINLOADER_PORT=str(m.binloader_port), PS4_PS4DEBUG_BIN=PAYLOAD,
+               PS4_EXPERIMENTAL_INSTALL="1")
     params = StdioServerParameters(command=sys.executable, args=["-m", "ps4_goldhen_mcp"], env=env)
     async with stdio_client(params) as (r, w):
         async with ClientSession(r, w) as s:

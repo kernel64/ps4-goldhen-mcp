@@ -21,6 +21,7 @@ def free_port() -> int:
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("PS4_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("PS4_EXPERIMENTAL_INSTALL", "1")
     m = MockPs4(event_port=7563)
     d = Ps4Debug("127.0.0.1", m.dbg_port, 5, event_port=7563)
     f = Ps4Ftp("127.0.0.1", m.ftp_port, 5)
@@ -72,6 +73,15 @@ def test_retail_and_system_packages_are_refused(env, title_id):
     pkg = put_pkg(m, "game.pkg", title_id)
     with pytest.raises(PermissionError, match="only homebrew"):
         apps_mod.install(a, f, d, pkg, timeout=10)
+    assert m.state.install_paths == []
+
+
+def test_disabled_by_default(env, monkeypatch):
+    m, d, f, a = env
+    monkeypatch.delenv("PS4_EXPERIMENTAL_INSTALL")
+    pkg = put_pkg(m, "x.pkg", "HRSA00098")
+    with pytest.raises(RuntimeError, match="disabled"):
+        apps_mod.install(a, f, d, pkg)
     assert m.state.install_paths == []
 
 

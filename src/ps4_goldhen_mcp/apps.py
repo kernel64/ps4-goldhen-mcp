@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import posixpath
 import re
 import tempfile
@@ -150,6 +151,11 @@ def install(agent: Agent, ftp: Ps4Ftp, dbg: Ps4Debug, console_path: str, *, repl
     The system moves the package into /user/app/<TITLE_ID>/app.pkg, so with keep_pkg a copy is
     installed and the file stays where it was. An installed title of the same ID is refused, or
     with replace closed if running and uninstalled first (its save data is kept by the system)."""
+    if os.environ.get("PS4_EXPERIMENTAL_INSTALL") != "1":
+        raise RuntimeError(
+            "ps4_install is disabled: apps installed this way may not launch (0x8002000c, the kernel cannot "
+            "map the moved app.pkg). Install the package with GoldHEN's Package Installer on the console. "
+            "PS4_EXPERIMENTAL_INSTALL=1 enables it for tests.")
     pkg = norm(console_path)
     if not pkg.lower().endswith(".pkg"):
         raise ValueError(f"{pkg} is not a .pkg file")

@@ -33,9 +33,9 @@ Tools to drive a jailbroken PS4 (GoldHEN) over the LAN: GoldHEN's FTP (files), i
 HDMI capture card on the PC (what the TV shows).
 
 Typical homebrew loop:
-1. Build the .pkg / files on the PC. `ps4_install(local_path=<pkg>)` sends and installs a homebrew
-   package (`replace=true` when a version is already installed); `ps4_deploy` syncs a folder of data
-   files to the console (only changed files), which needs no reinstall.
+1. Build the .pkg / files on the PC. A new pkg goes to /data/pkg/ (`ps4_upload`) and the user
+   installs it with GoldHEN's Package Installer (`ps4_install` is disabled for now: apps it installs
+   may not launch). `ps4_deploy` syncs a folder of data files (only changed files), no reinstall.
 2. `ps4_launch(title_id, wait_for="<line your app prints at init>")` starts an installed app without
    the pad and blocks until that klog line (or a crash). The console runs one game / app at a time:
    the running one is closed first. `ps4_deploy(..., launch=title_id, wait_for=...)` does both.
@@ -409,13 +409,16 @@ def ps4_close(title_id: str | None = None) -> dict:
 @friendly
 def ps4_install(local_path: str | None = None, console_path: str | None = None, replace: bool = False,
                 keep_pkg: bool = True, wait_seconds: float = 300) -> dict:
-    """Install a homebrew .pkg without the pad. local_path = a package on the PC (sent to /data/pkg/
+    """DISABLED for now (apps installed this way may not launch): install with GoldHEN's Package
+    Installer instead and tell the user. Install a homebrew .pkg without the pad. local_path = a package on the PC (sent to /data/pkg/
     first), or console_path = one already on the console. The system moves the package it installs,
     so keep_pkg (default) installs a copy and the console file stays. If the title is already
     installed it is refused, or with replace=true closed if running and uninstalled first (the
     system keeps its save data). Retail and system title IDs are refused: this is for your own
     homebrew. Returns the title ID, name and version once the system lists it."""
     _guard_write()
+    if os.environ.get("PS4_EXPERIMENTAL_INSTALL") != "1":
+        apps_mod.install(agent, ftp, dbg, "/disabled.pkg")  # raises the explanation
     if bool(local_path) == bool(console_path):
         raise ValueError("give either local_path (a pkg on the PC) or console_path (a pkg on the console)")
     keep = keep_pkg

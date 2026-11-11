@@ -105,6 +105,13 @@ Only installed titles are started, and system titles (`NPXS...`) are refused.
 
 ### Installing your packages
 
+**Disabled for now.** On my console an app installed this way would not start: the launch fails with
+`0x8002000c` because the kernel cannot build the block map of the moved `app.pkg`
+(`ufs_block_map_cache_create: failed ... [12]`, then `sceFsLvdAttach() failed`). Installing the same
+file with GoldHEN's Package Installer works, so until the tool installs the way GoldHEN does (through
+BGFT, which writes the package itself), `ps4_install` refuses unless `PS4_EXPERIMENTAL_INSTALL=1`, and
+packages are installed by hand. `ps4_uninstall` is not affected.
+
 `ps4_install(local_path="build\\myapp.pkg")` sends a package from the PC and installs it;
 `console_path="/data/pkg/..."` installs one that is already on the console. It returns once the system
 lists the app, with its name and version. `replace=true` closes and uninstalls an installed version
