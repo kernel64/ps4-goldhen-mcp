@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import select
+import shutil
 import socket
 import socketserver
 import struct
@@ -213,6 +214,16 @@ class FakeAgent:
         self.srv.close()
         self.st.write(self.table + 0x24, struct.pack("<I", 2))
 
+    def _pkg_title(self, path: str) -> str | None:
+        """Known test paths, or a fake package file whose content starts with "FAKEPKG <TITLE_ID>"."""
+        p = path.removeprefix("/user")
+        if p in self.st.pkgs:
+            return self.st.pkgs[p]
+        f = self.st.root / p.lstrip("/")
+        if f.is_file() and (head := f.read_bytes()[:18]).startswith(b"FAKEPKG "):
+            return head[8:17].decode()
+        return None
+
     def _handle(self, line: str) -> tuple[str, bool]:
         st = self.st
         cmd, *a = line.split()
@@ -246,12 +257,18 @@ class FakeAgent:
             st.app_kill(app_id)
             return f"OK {app_id:x}", False
         if cmd == "PKGINFO":
-            t = st.pkgs.get(a[0].removeprefix("/user"))
+            t = self._pkg_title(a[0])
             return (f"OK {t} 1", False) if t else err(0x80990015, "sceAppInstUtilGetTitleIdFromPkg")
         if cmd == "INSTALL":
-            t = st.pkgs.get(a[0].removeprefix("/user"))
+            t = self._pkg_title(a[0])
             if not t:
                 return err(0x80990015, "sceAppInstUtilAppInstallPkg")
+            if t in st.installed:
+                return err(0x80990002, "sceAppInstUtilAppInstallPkg")
+            f = st.root / a[0].removeprefix("/user").lstrip("/")
+            if f.is_file():  # like the console: the package is moved into the app folder
+                (st.root / "user/app" / t).mkdir(parents=True, exist_ok=True)
+                f.replace(st.root / "user/app" / t / "app.pkg")
             st.installed[t] = f"IV0000-{t}_00-MOCKPKG000000000"
             st.install_paths.append(a[0])
             return f"OK {st.installed[t]}", False
@@ -261,6 +278,7 @@ class FakeAgent:
             if a[0] not in st.installed:
                 return err(0x80990088, "sceAppInstUtilAppUnInstall")
             del st.installed[a[0]]
+            shutil.rmtree(st.root / "user/app" / a[0], ignore_errors=True)
             return "OK", False
         return err(0, "unknown command")
 
@@ -459,6 +477,7 @@ class MockPs4:
         threading.Thread(target=self.klog.serve_forever, daemon=True).start()
 
         self.state = FakeProcessState()
+        self.state.root = self.root
         self.event_port = event_port
         self.dbg_port = dbg_port
         self._bind_ps4debug()

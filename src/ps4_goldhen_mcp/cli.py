@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 
 from . import apps as apps_mod, capture as capture_mod, crash as crash_mod, deploy as deploy_mod, payload as payload_mod
 from .agent import Agent
@@ -15,7 +16,7 @@ from .klog import KlogListener
 from .lock import ConsoleBusy, ConsoleLock
 from .ps4debug import Ps4Debug
 
-WRITE_COMMANDS = {"put", "mkdir", "rm", "mv", "deploy", "load-ps4debug", "notify", "reboot", "launch", "close", "agent"}
+WRITE_COMMANDS = {"put", "mkdir", "rm", "mv", "deploy", "load-ps4debug", "notify", "reboot", "launch", "close", "agent", "install", "uninstall"}
 
 
 def _print(obj) -> None:
@@ -43,6 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--wait", metavar="REGEX", help="block until this klog line"); p.add_argument("--timeout", type=float, default=30)
     p = sub.add_parser("close", help="close the running app"); p.add_argument("title_id", nargs="?")
     p = sub.add_parser("agent"); p.add_argument("action", choices=["status", "load", "unload"], nargs="?", default="status")
+    p = sub.add_parser("install", help="install a homebrew pkg (a PC file, or a console path starting with /data/)")
+    p.add_argument("pkg"); p.add_argument("--replace", action="store_true")
+    p.add_argument("--move", action="store_true", help="console pkg: let the install consume it instead of a copy")
+    p = sub.add_parser("uninstall"); p.add_argument("title_id"); p.add_argument("--allow-retail", action="store_true")
     p = sub.add_parser("log"); p.add_argument("-f", action="store_true", help="follow"); p.add_argument("--grep"); p.add_argument("--seconds", type=float, default=3)
     p = sub.add_parser("wait"); p.add_argument("pattern"); p.add_argument("--timeout", type=float, default=30)
     p = sub.add_parser("symbolize"); p.add_argument("elf"); p.add_argument("offsets", nargs="+")
@@ -123,9 +128,19 @@ def main(argv: list[str] | None = None) -> int:
         elif a.cmd == "ps":
             for p in dbg.processes():
                 print(p["pid"], p["name"])
-        elif a.cmd in ("launch", "close", "agent"):
+        elif a.cmd in ("launch", "close", "agent", "install", "uninstall"):
             agent = Agent(dbg, cfg.host, cfg.agent_port, cfg.timeout, cfg.agent_host_process)
-            if a.cmd == "close":
+            if a.cmd == "install":
+                local = Path(a.pkg)
+                if not a.pkg.startswith("/") and local.is_file():
+                    remote = f"/data/pkg/{local.name}"
+                    ftp.upload(local, remote)
+                    _print(apps_mod.install(agent, ftp, dbg, remote, replace=a.replace, keep_pkg=False))
+                else:
+                    _print(apps_mod.install(agent, ftp, dbg, a.pkg, replace=a.replace, keep_pkg=not a.move))
+            elif a.cmd == "uninstall":
+                _print(apps_mod.uninstall(agent, ftp, dbg, a.title_id, allow_retail=a.allow_retail))
+            elif a.cmd == "close":
                 _print(apps_mod.close(agent, dbg, a.title_id))
             elif a.cmd == "agent":
                 if a.action == "status":

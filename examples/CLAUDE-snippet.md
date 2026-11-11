@@ -13,8 +13,8 @@ Test loop after each change:
 1. Build.
 2. `ps4_lock(reason=<what you are testing>)`. If another session has it, wait or retry later.
 3. `ps4_status`: checks the console and prepares it (ps4debug is loaded by itself after a boot).
-4. Send the files: `ps4_deploy` (data files) or `ps4_upload` (pkg to `/data/pkg/`; a new pkg is
-   installed by the user from GoldHEN's Package Installer: ask them).
+4. A new build of the app: `ps4_install(local_path=<pkg>, replace=true)`. Data files only:
+   `ps4_deploy` (no reinstall needed).
 5. `ps4_launch(title_id=<Title ID>, wait_for=<init log>)`: closes the running app, starts ours and
    returns its init line (or the crash). `ps4_close` when the test is over.
 6. On a crash: `ps4_crash_report(elf_path=<unstripped eboot ELF>)` and match function/file:line.

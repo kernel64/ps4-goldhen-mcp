@@ -11,6 +11,9 @@ m = MockPs4(event_port=7552, ps4debug_loaded=False)
 PAYLOAD = os.path.join(tempfile.mkdtemp(), "ps4debug.bin")
 with open(PAYLOAD, "wb") as f:
     f.write(bytes(64))
+LOCAL_PKG = os.path.join(tempfile.mkdtemp(), "IV0000-HRSA00096_00-E2E.pkg")
+with open(LOCAL_PKG, "wb") as f:
+    f.write(b"FAKEPKG HRSA00096" + bytes(100))
 with socket.socket() as _s:
     _s.bind(("127.0.0.1", 0))
     AGENT_PORT = _s.getsockname()[1]
@@ -41,6 +44,8 @@ async def main():
                      ("ps4_agent", {}), ("ps4_launch", {"title_id": "HRSA00002", "replace": False}),
                      ("ps4_close", {"title_id": "CUSA00001"}), ("ps4_close", {}), ("ps4_close", {}),
                      ("ps4_launch", {"title_id": "NPXS20001"}),
+                     ("ps4_install", {"local_path": LOCAL_PKG}), ("ps4_install", {"local_path": LOCAL_PKG}),
+                     ("ps4_uninstall", {"title_id": "HRSA00096"}), ("ps4_uninstall", {"title_id": "CUSA00031"}),
                      ("ps4_crash_report", {}), ("ps4_delete", {"path": "/data"}), ("ps4_unlock", {})]
             for name, args in calls:
                 if args.get("wait_for"):

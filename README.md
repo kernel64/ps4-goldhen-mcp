@@ -59,15 +59,16 @@ claude mcp add ps4 --scope user -e PS4_HOST=192.168.1.40 -- uv --directory C:\pa
 
 `examples/CLAUDE-snippet.md` is the text I paste into a homebrew project's `CLAUDE.md`.
 
-What Claude gets (44 tools, all prefixed `ps4_`):
+What Claude gets (46 tools, all prefixed `ps4_`):
 
 - **console**: status (what answers, firmware, ps4debug version, running apps), load ps4debug, send a
   payload, notification on the TV, reboot;
 - **files** (GoldHEN FTP): list, download, read a text file, upload (size checked), mkdir, rename,
   delete (system paths and GoldHEN's config are refused), incremental `ps4_deploy`;
 - **apps**: installed apps with their names (param.sfo) and the running ones (title ID, pid);
-  `ps4_launch` starts an installed app by title ID and can wait for a log line, `ps4_close` closes the
-  running one, `ps4_deploy` can launch after syncing;
+  `ps4_install` / `ps4_uninstall` for your homebrew packages, `ps4_launch` starts an installed app by
+  title ID and can wait for a log line, `ps4_close` closes the running one, `ps4_deploy` can launch
+  after syncing;
 - **logs**: everything the klog server streams (your `printf`, system services, kernel messages),
   collected in the background; `ps4_wait_for_log` blocks on a regex and stops early on a crash;
 - **crashes**: the kernel's fatal-signal reports are parsed (signal, reason, registers, backtrace,
@@ -100,9 +101,22 @@ Two things I learned the hard way on 5.05:
 - its parameter is 0x18 bytes there (`{u32 size; s32 user; s32 attr; s32 crash_report; u64 flags}`),
   not the 0x20 bytes of OpenOrbis' header.
 
-Only installed titles are started, and system titles (`NPXS...`) are refused. Nothing is installed,
-patched, decrypted or unlocked by these tools: installing a pkg is still done from GoldHEN's Package
-Installer.
+Only installed titles are started, and system titles (`NPXS...`) are refused.
+
+### Installing your packages
+
+`ps4_install(local_path="build\\myapp.pkg")` sends a package from the PC and installs it;
+`console_path="/data/pkg/..."` installs one that is already on the console. It returns once the system
+lists the app, with its name and version. `replace=true` closes and uninstalls an installed version
+first (the system keeps its save data). `ps4_uninstall("ABCD00001")` removes one.
+
+The system *moves* the package it installs into `/user/app/<TITLE_ID>/app.pkg` (GoldHEN's Package
+Installer copies it), so for a console path the tool installs a copy and your file stays where it was.
+
+These tools are for homebrew you build: packages with a retail title ID (`CUSA...`, `PLAS...` and the
+other Sony prefixes) or a system one are refused, and `ps4_uninstall` only removes a retail game with
+`allow_retail=true`, which an agent should only pass when you asked for it. Nothing is patched,
+decrypted or unlocked.
 
 The built agent is committed as text (`src/ps4_goldhen_mcp/_agent_blob.py`, base64 with its SHA-256,
 checked at load time), so a clone works without a PS4 toolchain. After a change to `companion/agent.c`,
@@ -153,6 +167,8 @@ signals: allow Python on that port in the Windows firewall (private network).
 uv run ps4 info
 uv run ps4 ls /data
 uv run ps4 put build\app.pkg /data/pkg/app.pkg
+uv run ps4 install build\app.pkg --replace       # or a console path: /data/pkg/app.pkg
+uv run ps4 uninstall ABCD00001
 uv run ps4 deploy build\data /data/homebrew/myapp
 uv run ps4 log -f --grep myapp
 uv run ps4 wait "init ok" --timeout 60

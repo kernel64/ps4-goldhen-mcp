@@ -33,9 +33,9 @@ Tools to drive a jailbroken PS4 (GoldHEN) over the LAN: GoldHEN's FTP (files), i
 HDMI capture card on the PC (what the TV shows).
 
 Typical homebrew loop:
-1. Build the .pkg / files on the PC. `ps4_deploy` syncs a folder to the console (only changed files),
-   `ps4_upload` sends one file (e.g. a pkg to /data/pkg/). A new pkg is still installed by the user
-   (GoldHEN's Package Installer); data files next to an installed app need no reinstall.
+1. Build the .pkg / files on the PC. `ps4_install(local_path=<pkg>)` sends and installs a homebrew
+   package (`replace=true` when a version is already installed); `ps4_deploy` syncs a folder of data
+   files to the console (only changed files), which needs no reinstall.
 2. `ps4_launch(title_id, wait_for="<line your app prints at init>")` starts an installed app without
    the pad and blocks until that klog line (or a crash). The console runs one game / app at a time:
    the running one is closed first. `ps4_deploy(..., launch=title_id, wait_for=...)` does both.
@@ -403,6 +403,46 @@ def ps4_close(title_id: str | None = None) -> dict:
     is the one running. Returns what was closed; nothing to close is not an error."""
     _guard_write()
     return apps_mod.close(agent, dbg, title_id)
+
+
+@mcp.tool(annotations=WRITE)
+@friendly
+def ps4_install(local_path: str | None = None, console_path: str | None = None, replace: bool = False,
+                keep_pkg: bool = True, wait_seconds: float = 300) -> dict:
+    """Install a homebrew .pkg without the pad. local_path = a package on the PC (sent to /data/pkg/
+    first), or console_path = one already on the console. The system moves the package it installs,
+    so keep_pkg (default) installs a copy and the console file stays. If the title is already
+    installed it is refused, or with replace=true closed if running and uninstalled first (the
+    system keeps its save data). Retail and system title IDs are refused: this is for your own
+    homebrew. Returns the title ID, name and version once the system lists it."""
+    _guard_write()
+    if bool(local_path) == bool(console_path):
+        raise ValueError("give either local_path (a pkg on the PC) or console_path (a pkg on the console)")
+    keep = keep_pkg
+    if local_path:
+        src = _local(local_path)
+        if src.suffix.lower() != ".pkg" or not src.is_file():
+            raise FileNotFoundError(f"{src} is not a .pkg file")
+        if not ftp.exists("/data/pkg"):
+            ftp.makedirs("/data/pkg")
+        console_path = f"/data/pkg/{src.name}"
+        ftp.upload(src, console_path)
+        keep = False  # the original is on the PC
+    out = apps_mod.install(agent, ftp, dbg, console_path, replace=replace, keep_pkg=keep,
+                           timeout=max(30.0, min(wait_seconds, 1800.0)))
+    if local_path:
+        out["sent_from"] = str(_local(local_path))
+    return out
+
+
+@mcp.tool(annotations=DESTRUCTIVE)
+@friendly
+def ps4_uninstall(title_id: str, allow_retail: bool = False) -> dict:
+    """Uninstall an installed homebrew by title ID (closed first if it runs). Its save data stays
+    on the console. Retail games are refused unless allow_retail=true, which needs the user's
+    explicit agreement for that title; system titles are always refused."""
+    _guard_write()
+    return apps_mod.uninstall(agent, ftp, dbg, title_id, allow_retail=allow_retail)
 
 
 @mcp.tool(annotations=WRITE)
