@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+*.png
+*.log
+*.bin
+*.pkg
+companion/build/
+
+# local / personal
+CLAUDE.md
+.claude/
+.mcp.json

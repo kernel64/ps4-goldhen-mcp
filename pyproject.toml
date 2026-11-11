@@ -1,0 +1,32 @@
+[project]
+name = "ps4-goldhen-mcp"
+version = "0.1.0"
+description = "MCP server + CLI + Python library to drive a jailbroken PS4 (GoldHEN, ps4debug) from Claude Code"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Mohamed Aymen" }]
+dependencies = [
+    "mcp>=2",
+    "pillow>=10",
+    "capstone>=5",
+    "pyelftools>=0.31",
+    "imageio-ffmpeg>=0.5",  # bundled ffmpeg for the HDMI capture card
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyftpdlib>=1.5"]
+
+[project.scripts]
+ps4-goldhen-mcp = "ps4_goldhen_mcp.server:main"
+ps4 = "ps4_goldhen_mcp.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ps4_goldhen_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
