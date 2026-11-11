@@ -66,7 +66,7 @@ FAKE_SYMBOLS = {"sceKernelGetCpuFrequency": (8193, 0x800001000), "scePthreadCrea
                 "sceSystemServiceLaunchApp": (113, LAUNCH_WRAPPER),
                 **{n: (113, 0x800003000 + 0x10 * i) for i, n in enumerate(AGENT_FUNCTIONS) if n != "sceLncUtilLaunchApp"}}
 AGENT_MAGIC = 0x50533441474E5431
-AGENT_VERSION = 3  # what FakeAgent answers to PING
+AGENT_VERSION = 4  # what FakeAgent answers to PING
 NO_BIG_APP = 0x80AA000A
 
 
@@ -107,6 +107,12 @@ class FakeProcessState:
         self.agent_starts = 0
         self.freed: list[tuple[int, int]] = []
         self.launch_delay = 0.0
+        # ps4debug's own state: payloads the BinLoader got, RPC stubs, a counter bumped by reboot()
+        self.payloads: list[bytes] = []
+        self.rpc_installs = 0
+        self.stub_mapped = False
+        self.generation = 0
+        self.install_paths: list[str] = []
 
     def write(self, addr: int, data: bytes) -> None:
         for i, b in enumerate(data):
@@ -240,14 +246,15 @@ class FakeAgent:
             st.app_kill(app_id)
             return f"OK {app_id:x}", False
         if cmd == "PKGINFO":
-            t = st.pkgs.get(a[0])
+            t = st.pkgs.get(a[0].removeprefix("/user"))
             return (f"OK {t} 1", False) if t else err(0x80990015, "sceAppInstUtilGetTitleIdFromPkg")
         if cmd == "INSTALL":
-            t = st.pkgs.get(a[0])
+            t = st.pkgs.get(a[0].removeprefix("/user"))
             if not t:
                 return err(0x80990015, "sceAppInstUtilAppInstallPkg")
             st.installed[t] = f"IV0000-{t}_00-MOCKPKG000000000"
-            return "OK", False
+            st.install_paths.append(a[0])
+            return f"OK {st.installed[t]}", False
         if cmd == "EXISTS":
             return f"OK {int(a[0] in st.installed)}", False
         if cmd == "UNINSTALL":
@@ -276,11 +283,14 @@ class _DbgHandler(socketserver.BaseRequestHandler):
 
     def handle(self):
         st: FakeProcessState = self.server.state
+        generation = st.generation
         try:
             while True:
                 magic, cmd, ln = struct.unpack("<III", self._rx(12))
                 assert magic == MAGIC
                 f = self._rx(ln) if ln else b""
+                if st.generation != generation:  # the console rebooted under this connection
+                    return
                 if cmd == 0xBD000001:
                     self._tx(struct.pack("<I", 3), b"1.3")
                 elif cmd == 0xBD000500:
@@ -297,8 +307,9 @@ class _DbgHandler(socketserver.BaseRequestHandler):
                     self._tx(self._st(), struct.pack("<I", pid) + name.encode().ljust(40, b"\0") + path.encode().ljust(64, b"\0")
                              + tid.encode().ljust(16, b"\0") + cid.encode().ljust(64, b"\0"))
                 elif cmd == 0xBDAA0004:
-                    body = b"".join(n.encode().ljust(32, b"\0") + struct.pack("<QQQH", s, e, 0, p) for n, s, e, p in st.maps)
-                    self._tx(self._st(), struct.pack("<I", len(st.maps)), body)
+                    maps = st.maps + ([("(NoName)rpcstub", 0x7000000, 0x7004000, 7)] if st.stub_mapped else [])
+                    body = b"".join(n.encode().ljust(32, b"\0") + struct.pack("<QQQH", s, e, 0, p) for n, s, e, p in maps)
+                    self._tx(self._st(), struct.pack("<I", len(maps)), body)
                 elif cmd == 0xBDAA0002:
                     pid, addr, n = struct.unpack("<IQI", f)
                     self._tx(self._st(), st.read(addr, n))
@@ -319,6 +330,8 @@ class _DbgHandler(socketserver.BaseRequestHandler):
                 elif cmd == 0xBDAA0008:
                     self._tx(self._st())
                 elif cmd == 0xBDAA0005:
+                    st.rpc_installs += 1
+                    st.stub_mapped = True
                     self._tx(self._st(), struct.pack("<Q", 0x7000000))
                 elif cmd == 0xBDAA0006:
                     pid, stub, rip, *regs = struct.unpack("<IQQ6Q", f)
@@ -376,6 +389,14 @@ class _Threaded(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
 
 
+class _BinLoaderHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        data = b""
+        while chunk := self.request.recv(65536):
+            data += chunk
+        self.server.on_payload(data)
+
+
 class _KlogHandler(socketserver.BaseRequestHandler):
     def handle(self):
         srv = self.server
@@ -411,7 +432,8 @@ class _KlogHandler(socketserver.BaseRequestHandler):
 
 
 class MockPs4:
-    def __init__(self, ftp_port: int = 0, klog_port: int = 0, dbg_port: int = 0, event_port: int = 7550):
+    def __init__(self, ftp_port: int = 0, klog_port: int = 0, dbg_port: int = 0, event_port: int = 7550,
+                 ps4debug_loaded: bool = True, binloader: bool = True):
         from pyftpdlib.authorizers import DummyAuthorizer
         from pyftpdlib.handlers import FTPHandler
         from pyftpdlib.servers import ThreadedFTPServer
@@ -437,11 +459,51 @@ class MockPs4:
         threading.Thread(target=self.klog.serve_forever, daemon=True).start()
 
         self.state = FakeProcessState()
-        self.dbg = _Threaded(("127.0.0.1", dbg_port), _DbgHandler)
+        self.event_port = event_port
+        self.dbg_port = dbg_port
+        self._bind_ps4debug()
+        if ps4debug_loaded:
+            self._start_ps4debug()
+
+        # GoldHEN's BinLoader: any payload "is" ps4debug here; it starts listening a moment later
+        self.binloader = _Threaded(("127.0.0.1", 0), _BinLoaderHandler)
+        self.binloader.on_payload = self._payload
+        self.binloader_port = self.binloader.server_address[1]
+        self.binloader_running = binloader
+        if binloader:
+            threading.Thread(target=self.binloader.serve_forever, daemon=True).start()
+        else:
+            self.binloader.server_close()
+
+    def _bind_ps4debug(self) -> None:
+        # nothing listens on the port: connections are refused, as on a console without ps4debug
+        if not self.dbg_port:
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                self.dbg_port = probe.getsockname()[1]
+        self.dbg = None
+        self.dbg_running = False
+
+    def _start_ps4debug(self) -> None:
+        self.dbg = _Threaded(("127.0.0.1", self.dbg_port), _DbgHandler)
         self.dbg.state = self.state
-        self.dbg.event_port = event_port
-        self.dbg_port = self.dbg.server_address[1]
+        self.dbg.event_port = self.event_port
+        self.dbg_running = True
         threading.Thread(target=self.dbg.serve_forever, daemon=True).start()
+
+    def _payload(self, data: bytes) -> None:
+        self.state.payloads.append(data)
+        if data and not self.dbg_running:
+            threading.Timer(0.3, self._start_ps4debug).start()
+
+    def reboot(self) -> None:
+        """The console reboots: open connections die, ps4debug and its stubs are gone."""
+        self.state.generation += 1
+        self.state.stub_mapped = False
+        if self.dbg_running:
+            self.dbg.shutdown()
+            self.dbg.server_close()
+        self._bind_ps4debug()
 
     def say(self, *lines: str) -> None:
         with self.klog.cv:
@@ -451,7 +513,7 @@ class MockPs4:
     def close(self) -> None:
         self.klog.stopping = True
         self.ftp.close_all()
-        for s in (self.klog, self.dbg):
+        for s in (self.klog,) + ((self.binloader,) if self.binloader_running else ()) + ((self.dbg,) if self.dbg_running else ()):
             s.shutdown()
             s.server_close()
 

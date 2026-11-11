@@ -51,12 +51,12 @@ def test_embedded_blob_is_the_built_one():
 
 def test_launch_and_kill(host):
     s1, s2 = host["sessions"][0], host["sessions"][1]
-    assert s1 == ["OK ps4-dev-agent 3 7a1234000 8000 45", "OK 10000000", "OK 80aa000a", "ERR 0 bad title id",
+    assert s1 == ["OK ps4-dev-agent 4 7a1234000 8000 45", "OK 10000000", "OK 80aa000a", "ERR 0 bad title id",
                   "ERR 0 bad title id", "ERR 80940031 sceLncUtilLaunchApp", "OK 60000f0b", "OK 60000f0b",
                   "ERR 8094000c sceLncUtilLaunchApp"]
     assert s2 == ["ERR 80940010 sceSystemServiceKillApp", "ERR 0 bad app id", "ERR 0 bad app id", "ERR 0 bad app id",
                   "OK 60000f0b", "ERR 80aa000a no big app", "OK 80aa000a", "ERR 0 empty command",
-                  "ERR 0 unknown command", "OK ps4-dev-agent 3 7a1234000 8000 45"]
+                  "ERR 0 unknown command", "OK ps4-dev-agent 4 7a1234000 8000 45"]
     log = host["log"]
     # the launch parameter the system gets: 0x18 bytes (firmware 5.05), the foreground user, argv as given
     assert "launch HRSA00064 size=0x18 user=0x10000000 attr=0 crash=0 check=0 args=[--rom][/data/x.z64] argc=2" in log
@@ -66,18 +66,22 @@ def test_launch_and_kill(host):
 
 
 def test_packages(host):
-    assert host["sessions"][2] == ["OK HRSA00099 1", "ERR 0 expected an absolute path", "OK 0", "OK", "OK 1", "OK",
+    assert host["sessions"][2] == ["OK HRSA00099 1", "ERR 0 expected an absolute path", "OK 0",
+                                   "OK IV0000-HRSA00099_00-NEWPKG0000000000", "OK 1", "OK",
                                    "ERR 80990088 sceAppInstUtilAppUnInstall", "OK 1", "ERR 0 bad title id"]
+    log = host["log"]
+    assert "install /data/pkg/new.pkg info=buffer" in log
+    assert log.count("appinst init") == 1
     assert host["noinst"] == ["ERR 0 libSceAppInstUtil is not available in the host process", "OK bye"]
 
 
 def test_robustness(host):
-    assert host["sessions"][3] == ["ERR 0 line too long", "OK ps4-dev-agent 3 7a1234000 8000 45"]
+    assert host["sessions"][3] == ["ERR 0 line too long", "OK ps4-dev-agent 4 7a1234000 8000 45"]
     assert host["after_silent"][0].startswith("OK ps4-dev-agent") and host["silent_wait"] < 3
     assert host["quit"] == ["OK bye"]
     log = host["log"]
     assert log[0] == "start size=%d table=184" % len(BIN.read_bytes())
     assert "bind len=16 sa_len=16 family=2 port=9227" in log
-    assert log[-1] == "stopped state=0x2 version=3 last_error=0"
+    assert log[-1] == "stopped state=0x2 version=4 last_error=0"
     # wrong table: nothing is called, no state is written
     assert host["badmagic"] == [host["badmagic"][0], "stopped state=0 version=0 last_error=0"]

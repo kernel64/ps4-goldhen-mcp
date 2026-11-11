@@ -45,11 +45,10 @@ Typical homebrew loop:
    and function/file:line when you pass the unstripped ELF of your eboot (before create-fself).
 4. `ps4_capture_photo` / `_burst` / `_video` / `_record` show the real HDMI output.
 
-ps4debug must be loaded after every console boot: `ps4_load_ps4debug` sends it to GoldHEN's
-BinLoader (9090); `ps4_launch` / `ps4_close` do it themselves when needed. Never probe port 9090
-yourself: an empty connection disarms the BinLoader.
-Launching and closing go through a small agent thread the server injects into a system daemon
-(`ps4_agent` shows it). Do not launch apps with `ps4_call` and sceSystemServiceLaunchApp: that
+The console prepares itself: after a boot, the first tool that needs ps4debug sends it to GoldHEN's
+BinLoader, and launching or closing an app loads the small agent thread that does it (`ps4_agent`
+shows it). `ps4_status` reports both. `ps4_load_ps4debug(force=true)` only forces a reload. Never
+probe port 9090 yourself: an empty connection disarms the BinLoader. Do not launch apps with `ps4_call` and sceSystemServiceLaunchApp: that
 function drops the user and crashes the console UI. `ps4_call` refuses core daemons; ask the user
 before experimenting with it.
 
@@ -68,9 +67,18 @@ dbg = Ps4Debug(cfg.host, cfg.debug_port, cfg.timeout)
 klog = KlogListener(cfg.host, cfg.klog_port, log_file=cfg.log_file)
 agent = Agent(dbg, cfg.host, cfg.agent_port, cfg.timeout, cfg.agent_host_process)
 console_lock = ConsoleLock(cfg.host, lease_seconds=cfg.lock_lease)
+
+
+def _reserved_by_other() -> str | None:
+    st = console_lock.status()
+    return describe_lock(st) if st and not st.get("held_by_me") else None
+
+
+ps4debug_loader = payload_mod.Ps4DebugLoader(cfg, _reserved_by_other)
+dbg.loader = ps4debug_loader
 atexit.register(lambda: console_lock.release())
 card = capture_mod.CaptureCard.from_env()
-_remote: dict[int, RemoteProcess] = {}
+_remote: dict[int, tuple[int, RemoteProcess]] = {}  # pid -> (connection epoch, symbols and scratch)
 
 
 def _stop_recording_at_exit() -> None:
@@ -160,8 +168,14 @@ def ps4_status() -> dict:
     """What answers on the console (FTP, klog, ps4debug), ps4debug and firmware version, running
     apps, klog channel state and who holds the console reservation. Never touches the BinLoader port."""
     out: dict = {"host": cfg.host, "ftp": port_open(cfg.host, cfg.ftp_port), "klog_port": port_open(cfg.host, cfg.klog_port)}
-    if dbg.available():
+    loads = ps4debug_loader.loads
+    try:
         out["ps4debug"] = dbg.version()
+    except Ps4DebugUnavailable as e:
+        out["ps4debug"] = f"not available: {e}"
+    else:
+        if ps4debug_loader.loads > loads:
+            out["ps4debug_loaded_now"] = ps4debug_loader.last_load
         fw = dbg.firmware()
         out["firmware"] = f"{fw // 100}.{fw % 100:02d}" if fw else None
         out["ps4debug_build"] = dbg.debugger_version()
@@ -169,8 +183,8 @@ def ps4_status() -> dict:
             out["running_apps"] = apps_mod.running(dbg)
         except Ps4DebugError as e:
             out["running_apps"] = f"error: {e}"
-    else:
-        out["ps4debug"] = "not loaded (ps4_load_ps4debug)"
+        info = agent.ping()
+        out["launch_agent"] = f"v{info['version']} in {agent.host_process}" if info else "loaded on first launch / close"
     out["klog_listener"] = {"running": klog.running, "connected": klog.connected, "source": klog.source,
                             "lines": len(klog.lines), "crashes": len(klog.crashes)}
     if klog.running and not klog.connected and klog.last_error:
@@ -180,22 +194,7 @@ def ps4_status() -> dict:
     return out
 
 
-def _need_ps4debug() -> None:
-    """Launch / close need ps4debug: after a console reboot it is loaded on the way."""
-    if dbg.available():
-        return
-    if not cfg.auto_load_ps4debug:
-        raise Ps4DebugUnavailable("ps4debug is not loaded (ps4_load_ps4debug); PS4_AUTO_LOAD_PS4DEBUG=0 disables auto-loading")
-    path = payload_mod.ps4debug_bin(cfg.ps4debug_bin)
-    payload_mod.send(cfg.host, cfg.binloader_port, path.read_bytes())
-    if payload_mod.wait_port(cfg.host, cfg.debug_port, 15) is None:
-        raise Ps4DebugUnavailable(f"ps4debug was sent to the BinLoader but did not open port {cfg.debug_port}: "
-                                  "is the BinLoader enabled in GoldHEN?")
-    dbg.close()
-
-
 def _launch(title_id: str, args: list[str] | None, replace: bool, wait_for: str | None, wait_timeout: float) -> dict:
-    _need_ps4debug()
     since = None
     if wait_for:
         re.compile(wait_for)  # a bad pattern fails before anything is closed or started
@@ -211,8 +210,8 @@ def _launch(title_id: str, args: list[str] | None, replace: bool, wait_for: str 
 @friendly
 def ps4_load_ps4debug(force: bool = False) -> dict:
     """Load ps4debug (GoldHEN fork v1.1.19, checked SHA-256) through GoldHEN's BinLoader (port 9090)
-    and wait for its port 744. Needed once after every console boot. Does nothing if ps4debug already
-    answers (unless force)."""
+    and wait for its port 744. Not needed in normal use: the server loads it by itself when a tool
+    needs it. force=true sends it again even if it answers."""
     _guard_write()
     if dbg.available() and not force:
         return {"already_loaded": dbg.version()}
@@ -222,6 +221,7 @@ def ps4_load_ps4debug(force: bool = False) -> dict:
     if up is None:
         raise RuntimeError(f"sent {n} bytes but ps4debug did not open port {cfg.debug_port} within 15 s")
     dbg.close()
+    dbg._new_instance()
     return {"sent_bytes": n, "file": str(path), "up_after_s": up, "version": dbg.version(), "build": dbg.debugger_version()}
 
 
@@ -247,16 +247,25 @@ def ps4_notify(message: str) -> str:
 @mcp.tool(annotations=DESTRUCTIVE)
 @friendly
 def ps4_reboot(wait_until_back: bool = True, timeout_seconds: float = 180) -> dict:
-    """Reboot the console (ps4debug). Everything running is lost, ps4debug must be reloaded
-    afterwards (ps4_load_ps4debug). Waits for GoldHEN's FTP to answer again."""
+    """Reboot the console (ps4debug). Everything running is lost, and GoldHEN does not survive it:
+    the user has to run the GoldHEN exploit again on the console before any tool works. Ask the
+    user first. With wait_until_back, waits for the console to go down, then for GoldHEN's FTP to
+    answer again (timeout_seconds, max 900). ps4debug and the launch agent are then loaded again by
+    the next tool that needs them."""
     _guard_write()
     dbg.reboot()
     _remote.clear()
-    out: dict = {"reboot": "sent"}
+    out: dict = {"reboot": "sent", "note": "GoldHEN must be enabled again on the console by the user"}
     if wait_until_back:
-        time.sleep(15)
-        back = payload_mod.wait_port(cfg.host, cfg.ftp_port, max(10.0, timeout_seconds - 15))
-        out["ftp_back_after_s"] = None if back is None else round(back + 15, 1)
+        t0 = time.monotonic()
+        deadline = t0 + max(60.0, min(timeout_seconds, 900.0))
+        while payload_mod.port_open(cfg.host, cfg.ftp_port, 2) and time.monotonic() < deadline:
+            time.sleep(3)
+        out["down_after_s"] = round(time.monotonic() - t0)
+        back = payload_mod.wait_port(cfg.host, cfg.ftp_port, max(0.0, deadline - time.monotonic()))
+        out["goldhen_back_after_s"] = None if back is None else round(time.monotonic() - t0)
+        if back is None:
+            out["note"] = "the console has not come back with GoldHEN yet: the user has to enable GoldHEN again"
     return out
 
 
@@ -366,7 +375,10 @@ def ps4_apps(which: Literal["running", "installed", "both"] = "both", names: boo
     if which in ("installed", "both"):
         out["installed"] = apps_mod.installed(ftp, with_names=names)
     if which in ("running", "both"):
-        out["running"] = apps_mod.running(dbg) if dbg.available() else "ps4debug not loaded"
+        try:
+            out["running"] = apps_mod.running(dbg)
+        except Ps4DebugUnavailable as e:
+            out["running"] = f"unknown: {e}"
     return out
 
 
@@ -390,7 +402,6 @@ def ps4_close(title_id: str | None = None) -> dict:
     """Close the running game / app (unsaved progress is lost). With title_id, only if that title
     is the one running. Returns what was closed; nothing to close is not an error."""
     _guard_write()
-    _need_ps4debug()
     return apps_mod.close(agent, dbg, title_id)
 
 
@@ -405,7 +416,6 @@ def ps4_agent(action: Literal["status", "load", "unload"] = "status") -> dict:
         info = agent.ping()
         return {"running": bool(info), **(info or {}), "port": agent.port, "host_process": agent.host_process}
     _guard_write()
-    _need_ps4debug()
     return agent.ensure() if action == "load" else agent.unload()
 
 
@@ -635,9 +645,12 @@ def ps4_call(process: str | int, function: str, args: list[str] | None = None) -
     the target; in SceShellUI it can freeze the console UI: ask the user before experimenting."""
     _guard_write()
     pid, name = _pid(process)
-    rp = _remote.get(pid)
+    dbg.version()  # connects (and loads ps4debug if needed) so the epoch below is current
+    cached = _remote.get(pid)
+    rp = cached[1] if cached and cached[0] == dbg.epoch and cached[1].name == name else None
     if rp is None:
-        rp = _remote[pid] = RemoteProcess(dbg, pid, name)
+        rp = RemoteProcess(dbg, pid, name)
+        _remote[pid] = (dbg.epoch, rp)
     target: str | int = _addr(function) if function.lower().startswith("0x") else function
     vals = [_addr(x) for x in (args or [])]
     rax = rp.call(target, *vals)

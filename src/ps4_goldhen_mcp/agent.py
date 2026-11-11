@@ -235,8 +235,10 @@ class Agent:
         title, is_app = self.request(f"PKGINFO {_path(console_path)}").split()
         return {"title_id": title, "is_app": is_app == "1"}
 
-    def install_pkg(self, console_path: str) -> None:
-        self.request(f"INSTALL {_path(console_path)}", max(self.timeout, 60))
+    def install_pkg(self, console_path: str) -> str | None:
+        """Starts the install (it goes on in the background); returns the content ID when the
+        system gives it."""
+        return self.request(f"INSTALL {_path(console_path)}", max(self.timeout, 60)) or None
 
     def exists(self, title_id: str) -> bool:
         return self.request(f"EXISTS {title_id}") == "1"
@@ -248,4 +250,5 @@ class Agent:
 def _path(p: str) -> str:
     if not p.startswith("/") or any(c.isspace() for c in p) or not p.isprintable():
         raise ValueError(f"console path {p!r}: absolute, without spaces")
-    return p
+    # /data is how FTP and apps see it; the install service needs the real path
+    return "/user" + p if p.startswith("/data/") else p

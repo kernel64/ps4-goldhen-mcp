@@ -28,6 +28,23 @@ from .config import cache_dir
 _PRIO = re.compile(r"^<\d{1,3}>")
 _BUSY = re.compile(r"failed to open klog")
 BACKLOG_GAP = 0.6  # seconds of silence that end the history replay
+BACKLOG_MAX = 3.0  # the replay is over by then even if the console never goes quiet (an app booting)
+RELAY_LIVE = "\x1e[klog relay] live"  # sent by a relay between its history and the live feed
+# The console logs all the time (SceShellCore alone every minute): that long without a byte means
+# a dead connection, e.g. a relay whose own console link died in a reboot without noticing.
+SILENCE_LIMIT = 90.0
+
+
+def _keepalive(s: socket.socket) -> None:
+    """After a console reboot the old connection stays "established" on the PC; keepalive probes
+    get it reset within seconds."""
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    if hasattr(socket, "SIO_KEEPALIVE_VALS"):
+        s.ioctl(socket.SIO_KEEPALIVE_VALS, (1, 10_000, 3_000))
+    else:
+        for name, value in (("TCP_KEEPIDLE", 10), ("TCP_KEEPINTVL", 3), ("TCP_KEEPCNT", 5)):
+            if hasattr(socket, name):
+                s.setsockopt(socket.IPPROTO_TCP, getattr(socket, name), value)
 RELAY_HISTORY = 3000  # lines a listener joining the relay gets as its backlog
 
 
@@ -55,6 +72,7 @@ class KlogListener:
         self._relay: socket.socket | None = None
         self._token = os.urandom(8).hex()  # tells our own relay file from another listener's
         self._relay_clients: list[socket.socket] = []
+        self._skip_relay_until = 0.0
 
     @property
     def running(self) -> bool:
@@ -102,7 +120,7 @@ class KlogListener:
             self.connects += 1
             self.last_error = None
             self._in_backlog = True
-            last_rx = time.monotonic()
+            last_rx = connected_at = time.monotonic()
             s.settimeout(0.2)
             pending = b""
             got_lines = False
@@ -114,6 +132,12 @@ class KlogListener:
                     except socket.timeout:
                         if self._in_backlog and time.monotonic() - last_rx > BACKLOG_GAP:
                             self._in_backlog = False
+                        if self._in_backlog and time.monotonic() - connected_at > BACKLOG_MAX:
+                            self._in_backlog = False
+                        if time.monotonic() - last_rx > SILENCE_LIMIT:
+                            if not direct:  # try the console itself: it is free if that relay is stale
+                                self._skip_relay_until = time.monotonic() + 300
+                            raise ConnectionError(f"no data for {SILENCE_LIMIT:.0f} s")
                         self._flush_crash_if_stale()
                         if direct:
                             self._start_relay()
@@ -128,6 +152,11 @@ class KlogListener:
                         if direct and not got_lines and _BUSY.search(text):
                             raise _Busy
                         got_lines = True
+                        if text == RELAY_LIVE:
+                            self._in_backlog = False
+                            continue
+                        if self._in_backlog and time.monotonic() - connected_at > BACKLOG_MAX:
+                            self._in_backlog = False
                         if direct:
                             self._start_relay()
                         self._add(text)
@@ -149,6 +178,7 @@ class KlogListener:
             if self._stop.is_set():
                 break
             if busy:
+                self._skip_relay_until = 0.0  # the console is taken: back to the relay
                 self._stop.wait(3.0)
             else:
                 self._add("[klog] connection lost, reconnecting", kind="info")
@@ -161,14 +191,17 @@ class KlogListener:
 
     def _open(self) -> tuple[socket.socket, bool, str]:
         """A listener that already owns the console connection, else the console itself."""
-        try:
-            info = json.loads(self._relay_file().read_text())
-            if info.get("token") != self._token:
-                s = socket.create_connection(("127.0.0.1", int(info["port"])), timeout=1)
-                return s, False, f"shared by pid {info.get('pid')}"
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-        return socket.create_connection((self.host, self.port), timeout=5), True, "console"
+        if time.monotonic() >= self._skip_relay_until:
+            try:
+                info = json.loads(self._relay_file().read_text())
+                if info.get("token") != self._token:
+                    s = socket.create_connection(("127.0.0.1", int(info["port"])), timeout=1)
+                    return s, False, f"shared by pid {info.get('pid')}"
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        s = socket.create_connection((self.host, self.port), timeout=5)
+        _keepalive(s)
+        return s, True, "console"
 
     def _start_relay(self) -> None:
         if self._relay is not None:
@@ -193,8 +226,7 @@ class KlogListener:
             with self._cv:  # no line can slip between the history and the live feed
                 history = [l["text"] for l in self.lines if l["kind"] != "info"][-RELAY_HISTORY:]
                 try:
-                    if history:
-                        c.sendall(("\n".join(history) + "\n").encode("utf-8", "replace"))
+                    c.sendall("".join(t + "\n" for t in history + [RELAY_LIVE]).encode("utf-8", "replace"))
                     self._relay_clients.append(c)
                 except OSError:
                     c.close()

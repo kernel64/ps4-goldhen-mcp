@@ -11,7 +11,7 @@
 //   KILL <app id hex>         -> OK                      sceSystemServiceKillApp(id, -1, 0, 0)
 //   KILLBIG                   -> OK <app id hex>         kill the running big app
 //   PKGINFO <path>            -> OK <TITLEID> <is_app>   sceAppInstUtilGetTitleIdFromPkg
-//   INSTALL <path>            -> OK                      sceAppInstUtilAppInstallPkg (pkg on the console)
+//   INSTALL <path>            -> OK [<CONTENTID>]        sceAppInstUtilAppInstallPkg (pkg on the console)
 //   EXISTS <TITLEID>          -> OK <0|1>
 //   UNINSTALL <TITLEID>       -> OK                      sceAppInstUtilAppUnInstall
 //   QUIT                      -> OK bye  (the thread exits; the host process keeps running)
@@ -293,7 +293,11 @@ static int handle_line(struct agent_table *t, int fd, char *line) {
             reply_err(t, fd, 0, by_path ? "expected an absolute path" : "bad title id");
             return 0;
         }
-        t->inst_initialize(); // already initialised is fine
+        // once: calling it again resets the link to the install service
+        if (!t->inst_ready) {
+            t->inst_initialize();
+            t->inst_ready = 1;
+        }
 
         if (streq(cmd, "PKGINFO")) {
             char title[32];
@@ -317,11 +321,17 @@ static int handle_line(struct agent_table *t, int fd, char *line) {
             *p++ = '\n';
             send_all(t, fd, out, (u64)(p - out));
         } else if (streq(cmd, "INSTALL")) {
-            rc = t->inst_install_pkg(word, 0);
+            // filled by the system: content id (0x30 bytes), content type, platform
+            char info[0x40];
+            int i;
+            for (i = 0; i < (int)sizeof(info); i++)
+                info[i] = 0;
+            rc = t->inst_install_pkg(word, info);
+            info[0x2f] = 0;
             if (rc < 0)
                 reply_err(t, fd, rc, "sceAppInstUtilAppInstallPkg");
             else
-                reply_ok(t, fd, 0);
+                reply_ok(t, fd, info[0] > ' ' && info[0] < 0x7f ? info : 0);
         } else if (streq(cmd, "EXISTS")) {
             int exists = 0;
             rc = t->inst_exists(word, &exists);

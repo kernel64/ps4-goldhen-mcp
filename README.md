@@ -17,8 +17,26 @@ I use it on a base PS4 on firmware 5.05 with GoldHEN and ps4debug v1.1.19.
 - **GoldHEN** with its FTP server (port 2121) and klog server (port 3232) enabled.
 - **BinLoader** enabled in GoldHEN (port 9090): the tool sends ps4debug through it.
 - **ps4debug** (GoldHEN's fork, [v1.1.19](https://github.com/GoldHEN/ps4debug/releases)): it isn't
-  resident, it has to be sent again after every boot. `ps4_load_ps4debug` (or `ps4 load-ps4debug`)
-  does it, downloading the official release once and checking its SHA-256.
+  resident and is gone after every boot, but you don't have to do anything about it (see below).
+
+### The console prepares itself
+
+GoldHEN itself does not survive a reboot on 5.05: someone has to run the exploit again on the console,
+so `ps4_reboot` always needs a person nearby. Once GoldHEN is back, the rest is automatic.
+
+After a boot, the first tool that needs ps4debug finds its port closed and sends it to the BinLoader
+(the official release, downloaded once and checked against its SHA-256), then carries on. Launching or
+closing an app loads the launch agent the same way. So an agent can start with `ps4_launch` or
+`ps4_processes` on a console that was just switched on, and `ps4_status` shows what was loaded.
+
+It stays polite on a shared console: one load at a time across all sessions (a machine-wide lock),
+nothing is sent while another session holds the console reservation, in read-only mode, or when
+GoldHEN's FTP does not answer (console off or in rest mode), and after a failure the same error is
+returned for a minute instead of sending the payload again on every call. `PS4_AUTO_LOAD_PS4DEBUG=0`
+turns it off; `ps4_load_ps4debug(force=true)` sends ps4debug again by hand.
+
+Nothing learnt before a reboot is trusted after it: RPC stubs are only reused if they are still
+mapped in the process, and cached symbol addresses are dropped on every new connection.
 
 Don't "test" port 9090 with a bare connection (telnet, port scanner...): the BinLoader takes the
 empty connection as a payload and stops listening until you toggle it again in the GoldHEN menu.
@@ -103,7 +121,7 @@ then runs the real blob on Linux (WSL on Windows) against fake system functions.
 | `PS4_LOG_FILE` | | also append every klog line to this file |
 | `PS4_READ_ONLY` | `0` | refuse anything that changes the console |
 | `PS4_PS4DEBUG_BIN` | | use this ps4debug.bin instead of the cached official one |
-| `PS4_AUTO_LOAD_PS4DEBUG` | `1` | `ps4_launch` / `ps4_close` load ps4debug themselves after a reboot |
+| `PS4_AUTO_LOAD_PS4DEBUG` | `1` | load ps4debug by itself when a tool needs it |
 | `PS4_AGENT_PORT` / `PS4_AGENT_HOST_PROCESS` | 9226 / `ScePartyDaemon` | the launch agent's port and the daemon it lives in |
 | `PS4_LOCK_LEASE` | `600` | reservation lease, seconds |
 | `PS4_OWNER` | project folder | name other sessions see when you hold the console |

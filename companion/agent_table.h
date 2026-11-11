@@ -6,7 +6,7 @@ typedef unsigned int u32;
 typedef unsigned long long u64;
 
 #define AGENT_MAGIC 0x50533441474e5431ULL // "PS4AGNT1"
-#define AGENT_VERSION 3
+#define AGENT_VERSION 4
 
 #define ST_LISTENING 1u
 #define ST_STOPPED 2u
@@ -22,7 +22,7 @@ struct agent_table {
     u32 host_pid;       // 0x20
     volatile u32 state; // 0x24
     int last_error;     // 0x28
-    u32 reserved;       // 0x2c
+    u32 inst_ready;     // 0x2c
     // 0x30: the sceAppInstUtil ones may be 0
     int (*net_socket)(const char *name, int family, int type, int proto);
     int (*net_bind)(int s, const void *addr, u32 len);

@@ -12,7 +12,7 @@ The console is shared with other Claude Code sessions.
 Test loop after each change:
 1. Build.
 2. `ps4_lock(reason=<what you are testing>)`. If another session has it, wait or retry later.
-3. `ps4_status` to check the console answers (`ps4_launch` reloads ps4debug by itself after a reboot).
+3. `ps4_status`: checks the console and prepares it (ps4debug is loaded by itself after a boot).
 4. Send the files: `ps4_deploy` (data files) or `ps4_upload` (pkg to `/data/pkg/`; a new pkg is
    installed by the user from GoldHEN's Package Installer: ask them).
 5. `ps4_launch(title_id=<Title ID>, wait_for=<init log>)`: closes the running app, starts ours and

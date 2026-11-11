@@ -40,7 +40,7 @@ def agent(dbg):
 
 def test_blob_and_table_layout():
     code, version = blob()
-    assert version == 3 and 1000 < len(code) < 0x3000
+    assert version == 4 and 1000 < len(code) < 0x3000
     assert [n for n, _ in FUNCTIONS] == AGENT_FUNCTIONS
     assert TABLE_HEADER + 8 * len(FUNCTIONS) == 184  # sizeof(struct agent_table), printed by tests/agent_host.c
 
@@ -48,7 +48,7 @@ def test_blob_and_table_layout():
 def test_inject_once_then_reuse(agent, mock):
     assert agent.ping() is None
     info = agent.ensure()
-    assert info["injected"] and info["host_pid"] == 45 and info["version"] == 3
+    assert info["injected"] and info["host_pid"] == 45 and info["version"] == 4
     code, _ = blob()
     assert mock.state.read(info["base"], len(code)) == code
     # the launch entry of the table is sceLncUtilLaunchApp, found through the wrapper's call instruction
@@ -94,11 +94,12 @@ def test_launch_errors(agent, dbg):
     assert e.value.code == 0x80940031
 
 
-def test_packages(agent):
+def test_packages(agent, mock):
     agent.ensure()
     assert agent.pkg_info("/data/pkg/new.pkg") == {"title_id": "HRSA00099", "is_app": True}
     assert not agent.exists("HRSA00099")
-    agent.install_pkg("/data/pkg/new.pkg")
+    assert agent.install_pkg("/data/pkg/new.pkg") == "IV0000-HRSA00099_00-MOCKPKG000000000"
+    assert mock.state.install_paths == ["/user/data/pkg/new.pkg"]  # the install service sees /user/data
     assert agent.exists("HRSA00099")
     agent.uninstall("HRSA00099")
     assert not agent.exists("HRSA00099")

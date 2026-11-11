@@ -17,6 +17,7 @@ import struct
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable
 
 MAGIC = 0xFFAABBCC
 CHUNK = 8192
@@ -131,8 +132,13 @@ class DebugEvent:
 class Ps4Debug:
     """One persistent command connection (port 744), reconnected on demand. Thread-safe."""
 
-    def __init__(self, host: str, port: int = 744, timeout: float = 10.0, event_port: int = DEBUG_EVENT_PORT):
+    def __init__(self, host: str, port: int = 744, timeout: float = 10.0, event_port: int = DEBUG_EVENT_PORT,
+                 loader: Callable[[], bool] | None = None):
         self.host, self.port, self.timeout = host, port, timeout
+        # called when the port refuses connections (console up, ps4debug not loaded); True = loaded
+        self.loader = loader
+        # bumped on every new connection: what was learnt about the console before may be stale
+        self.epoch = 0
         self.event_port = event_port
         self._sock: socket.socket | None = None
         self._lock = threading.RLock()
@@ -143,6 +149,7 @@ class Ps4Debug:
         self._ev_thread: threading.Thread | None = None
         self._ev_stop = threading.Event()
         self._rpc_stubs: dict[int, int] = {}
+        self._stubs_checked = True
 
     def available(self, timeout: float = 1.0) -> bool:
         try:
@@ -155,20 +162,39 @@ class Ps4Debug:
         if self._sock is None:
             try:
                 s = socket.create_connection((self.host, self.port), timeout=self.timeout)
+            except ConnectionRefusedError as e:
+                if not (self.loader and self.loader()):
+                    raise self._unavailable(e) from e
+                self._new_instance()
+                try:
+                    s = socket.create_connection((self.host, self.port), timeout=self.timeout)
+                except OSError as e2:
+                    raise self._unavailable(e2) from e2
             except OSError as e:
-                raise Ps4DebugUnavailable(
-                    f"ps4debug not reachable on {self.host}:{self.port} ({e}). Load it with ps4_load_ps4debug "
-                    "(GoldHEN BinLoader on port 9090); it must be reloaded after every console reboot."
-                ) from e
+                raise self._unavailable(e) from e
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self._sock = s
+            self.epoch += 1
         return self._sock
+
+    def _unavailable(self, e: Exception) -> Ps4DebugUnavailable:
+        return Ps4DebugUnavailable(
+            f"ps4debug not reachable on {self.host}:{self.port} ({e}). Load it with ps4_load_ps4debug "
+            "(GoldHEN BinLoader on port 9090); it must be reloaded after every console reboot.")
+
+    def _new_instance(self) -> None:
+        """A freshly loaded ps4debug knows nothing of the previous one's stubs and debug session."""
+        self._rpc_stubs.clear()
+        self._stubs_checked = True
+        self.attached_pid = None
 
     def close(self) -> None:
         with self._lock:
             if self._sock:
                 with contextlib.suppress(OSError):
                     self._sock.close()
+                # the console may have rebooted in between: check the stubs before using them again
+                self._stubs_checked = False
             self._sock = None
 
     def _recv(self, n: int) -> bytes:
@@ -327,6 +353,11 @@ class Ps4Debug:
         self._txn(go, "free")
 
     def install_rpc(self, pid: int) -> int:
+        if pid in self._rpc_stubs and not self._stubs_checked:
+            # a stub that is no longer mapped (console rebooted, same pid) would be jumped into blindly
+            self._rpc_stubs = {p: a for p, a in self._rpc_stubs.items()
+                               if any(m["start"] <= a < m["end"] for m in self.maps(p))}
+            self._stubs_checked = True
         if pid in self._rpc_stubs:
             return self._rpc_stubs[pid]
 
@@ -399,8 +430,7 @@ class Ps4Debug:
             with contextlib.suppress(OSError, ConnectionError):
                 self._cmd(CMD_CONSOLE_REBOOT)
             self.close()
-            self._rpc_stubs.clear()
-            self.attached_pid = None
+            self._new_instance()
 
     def _event_loop(self, server: socket.socket) -> None:
         server.settimeout(0.5)

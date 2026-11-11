@@ -90,6 +90,9 @@ def main(argv: list[str] | None = None) -> int:
             return 3
     ftp = Ps4Ftp(cfg.host, cfg.ftp_port, cfg.timeout)
     dbg = Ps4Debug(cfg.host, cfg.debug_port, cfg.timeout)
+    if a.cmd != "load-ps4debug":
+        dbg.loader = payload_mod.Ps4DebugLoader(
+            cfg, lambda: None if not (st := lock.status()) or st.get("held_by_me") else st.get("owner", "someone"))
     try:
         if a.cmd == "info":
             out = {"ftp": port_open(cfg.host, cfg.ftp_port), "klog": port_open(cfg.host, cfg.klog_port)}

@@ -101,11 +101,13 @@ static int f_inst_init(void) {
     return 0;
 }
 
-static int f_inst_pkg(const char *path, void *reserved) {
-    printf("install %s %p\n", path, reserved);
+static int f_inst_pkg(const char *path, void *info) {
+    printf("install %s info=%s\n", path, info ? "buffer" : "null");
     if (strcmp(path, "/data/pkg/new.pkg"))
         return (int)0x80990015;
     strcpy(installed[1], "HRSA00099");
+    if (info)
+        strcpy(info, "IV0000-HRSA00099_00-NEWPKG0000000000");
     return 0;
 }
 

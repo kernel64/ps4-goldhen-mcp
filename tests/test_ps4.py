@@ -1,4 +1,5 @@
 import struct
+import threading
 import time
 
 import pytest
@@ -137,6 +138,79 @@ def test_klog_is_shared_between_listeners(mock, tmp_path, monkeypatch, request):
     assert b.wait_for("after takeover", 5, since_id=since)["matched"]
     b.stop()
     assert not list(tmp_path.glob("klog-*.json"))
+
+
+def test_klog_relay_live_lines_are_not_backlog_while_the_console_chatters(mock, tmp_path, monkeypatch, request):
+    """A session joining through the relay gets the history then live lines with no quiet gap
+    (an app booting prints all the time): the live ones must still satisfy wait_for."""
+    monkeypatch.setenv("PS4_CACHE_DIR", str(tmp_path))
+    a = KlogListener("127.0.0.1", mock.klog_port)
+    a.start()
+    request.addfinalizer(a.stop)
+    assert a.wait_connected(5)
+    mock.say(*[f"[old] line {i}" for i in range(500)])
+    assert a.wait_for("line 499", 5, since_id=1)["matched"]
+    stop = threading.Event()
+
+    def chatter():
+        i = 0
+        while not stop.is_set():
+            mock.say(f"[SceShellCore] busy {i}")
+            i += 1
+            time.sleep(0.05)
+    threading.Thread(target=chatter, daemon=True).start()
+    request.addfinalizer(stop.set)
+    b = KlogListener("127.0.0.1", mock.klog_port)
+    b.start()
+    request.addfinalizer(b.stop)
+    since = None
+    for _ in range(50):
+        if b.connected:
+            since = b.next_id
+            break
+        time.sleep(0.1)
+    assert b.source and b.source.startswith("shared by pid")
+    mock.say("==== myapp 1.0 ====")
+    r = b.wait_for("==== myapp", 10, since_id=since)
+    assert r["matched"], r
+    assert not any("klog relay" in l["text"] for l in b.lines)
+
+
+def test_klog_stale_relay_is_left_for_the_console(mock, tmp_path, monkeypatch, request):
+    """A relay that only sends its history (its own console link died in a reboot) is given up
+    after a silence, and the console, free in that case, is used directly."""
+    import json
+    import socket as socket_mod
+
+    from ps4_goldhen_mcp import klog as klog_mod
+
+    monkeypatch.setenv("PS4_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(klog_mod, "SILENCE_LIMIT", 1.5)
+    stale = socket_mod.socket()
+    stale.bind(("127.0.0.1", 0))
+    stale.listen(1)
+    request.addfinalizer(stale.close)
+    held = []
+
+    def serve_history_then_nothing():
+        c, _ = stale.accept()
+        held.append(c)
+        c.sendall(b"[old] history line\n")
+    threading.Thread(target=serve_history_then_nothing, daemon=True).start()
+    (tmp_path / f"klog-127.0.0.1-{mock.klog_port}.json").write_text(
+        json.dumps({"pid": 1, "port": stale.getsockname()[1], "token": "someone-else"}))
+
+    k = KlogListener("127.0.0.1", mock.klog_port)
+    k.start()
+    request.addfinalizer(k.stop)
+    deadline = time.time() + 15
+    while time.time() < deadline and k.source != "console":
+        time.sleep(0.1)
+    assert k.source == "console"
+    assert k.wait_connected(5)
+    since = k.next_id
+    mock.say("[app] after the stale relay")
+    assert k.wait_for("after the stale relay", 5, since_id=since)["matched"]
 
 
 def test_klog_held_by_a_foreign_client(mock, tmp_path, monkeypatch, request):
